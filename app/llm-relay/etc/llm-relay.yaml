@@ -1,0 +1,14 @@
+Name: llm-relay
+Host: 0.0.0.0
+Port: 8888
+# 流式读超时要长（毫秒），默认 300s
+Timeout: 300000
+
+# 上游渠道（P0 先单渠道，配置文件写死；P2 再迁移到数据库 + 多渠道）
+Upstream:
+  Name: deepseek
+  BaseURL: https://api.deepseek.com
+  APIKey: "sk-xxx-换成你的真实上游key"
+
+# 对外分发的虚拟 key（P0 先写死一个，P3 换成数据库令牌表）
+AuthKey: "sk-relay-test"
