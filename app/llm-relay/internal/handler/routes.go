@@ -10,13 +10,13 @@ import (
 )
 
 // RegisterHandlers 对外 OpenAI 兼容接口不走 goctl 生成，手写注册，
-// 方便后续直接持有 http.ResponseWriter 做 SSE 逐 chunk flush
+// 直接持有 http.ResponseWriter 做 SSE 逐 chunk flush
 func RegisterHandlers(server *rest.Server, svcCtx *svc.ServiceContext) {
 	server.AddRoutes([]rest.Route{
 		{
 			Method:  http.MethodPost,
 			Path:    "/v1/chat/completions",
-			Handler: relay.ChatCompletionsHandler(svcCtx),
+			Handler: relay.TokenAuthMiddleware(svcCtx, relay.ChatCompletionsHandler(svcCtx)),
 		},
 		{
 			Method:  http.MethodGet,

@@ -61,11 +61,12 @@ One API 兼容的用量查询接口，让 LobeChat 这类前端的"余额"页面
 syntax = "v1"
 
 // ---- 渠道 ----
-POST   /api/admin/channel              // 创建
+POST   /api/admin/channel              // 创建（body 带 keys[]，AES 加密入 lr_channel_key）
 PUT    /api/admin/channel/:id          // 更新
 DELETE /api/admin/channel/:id
 GET    /api/admin/channel/list         // 分页
-POST   /api/admin/channel/:id/test     // 手动探活
+POST   /api/admin/channel/:id/test     // 手动探活（一般只用于禁用渠道的恢复验证）
+// 渠道/映射保存后统一动作：重建 lr_ability 对应行 + 刷新内存路由快照
 
 // ---- 模型映射 ----
 POST   /api/admin/model-mapping
@@ -113,8 +114,10 @@ Relay:
   MaxRetryTimes: 3                     # 未出首字节前的换渠道重试次数
   UpstreamTimeoutMs: 600000            # 流式整体读超时
   ConnectTimeoutMs: 10000
-  HealthCheckIntervalSec: 60
-  AutoDisableFailCount: 3
+  HealthCheckIntervalSec: 60           # 禁用渠道的恢复探活周期(正常渠道不探测)
+  AutoDisableFailCount: 3              # 被动统计连续失败N次自动禁用
+  EnforceIncludeUsage: true            # OpenAI兼容上游注入 stream_options.include_usage
+  BatchUpdateIntervalSec: 5            # 配额增量批量落库周期
   LogBuffer: 1024                      # 异步日志 channel 容量
   TokenCacheSec: 30
 ```
@@ -162,4 +165,5 @@ services:
 - [ ] 无效 key → 401 OpenAI 格式错误
 - [ ] 配额耗尽 → 402
 - [ ] 杀掉主渠道（改错 base_url）→ 请求自动切备用渠道成功
+- [ ] 并发压测同一令牌（如 `wrk -c 50`）→ 不超扣，Redis 配额与 DB flush 后对账一致
 - [ ] 日志表能查到本次请求的 token 数与扣费

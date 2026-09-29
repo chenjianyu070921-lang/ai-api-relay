@@ -12,6 +12,7 @@
 | [02-数据库设计.md](02-数据库设计.md) | 全部表结构 DDL（渠道、令牌、用户、日志、计费） |
 | [03-API设计.md](03-API设计.md) | 对内管理接口 + 对外 OpenAI 兼容接口定义、配置示例 |
 | [04-参考项目分析.md](04-参考项目分析.md) | One API / New API / GPT-Load 架构分析、可借鉴清单（按优先级） |
+| [deploy/schema.sql](deploy/schema.sql) | 建库建表脚本（已在本地 onepark-mysql 的 `llm_relay` 库执行，10 张表） |
 
 ## 一句话定位
 

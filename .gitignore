@@ -1,0 +1,16 @@
+# Binaries
+*.exe
+*.exe~
+bin/
+
+# Go build/test artifacts
+*.test
+*.out
+
+# Local env files (DSN/keys must stay out of the repo)
+.env
+*.local.yaml
+
+# IDE
+.idea/
+.vscode/

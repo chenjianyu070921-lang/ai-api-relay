@@ -1,12 +1,15 @@
-# 02 数据库设计
+-- llm-relay 数据库 Schema
+-- 对应设计文档：02-数据库设计.md（2026-09-29 版）
+-- MySQL 8.x，utf8mb4。金额/配额统一用整数（1 quota = 0.0001 元）。
 
-> MySQL 8.x，utf8mb4。金额/配额统一用**整数**存储（单位：0.0001 元，即 1 quota = 0.0001 元，等价 $0.0001 可自定汇率），避免浮点误差。
-> 模型名统一 VARCHAR(128)。
+CREATE DATABASE IF NOT EXISTS `llm_relay`
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE `llm_relay`;
 
-## 1. `lr_channel` — 上游渠道
-
-```sql
-CREATE TABLE `lr_channel` (
+-- ---------------------------------------------------------------
+-- 1. lr_channel — 上游渠道
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `lr_channel` (
   `id`             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `name`           VARCHAR(64)  NOT NULL COMMENT '渠道名称',
   `type`           VARCHAR(32)  NOT NULL COMMENT '适配器类型: openai / anthropic / ark / ollama / custom',
@@ -24,14 +27,14 @@ CREATE TABLE `lr_channel` (
   `updated_at`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY `idx_status_priority` (`status`, `priority`)
 ) COMMENT '上游渠道';
-```
 
-> 上游真实 key 不放在本表，拆到 `lr_channel_key`（1:N）。P0 阶段每渠道只配 1 个 key，但表结构按多 key 设计，P2 做 key 池调度时无需迁移。
+-- 上游真实 key 不放在本表，拆到 lr_channel_key（1:N）。
+-- P0 阶段每渠道只配 1 个 key，表结构按多 key 设计，P2 做 key 池调度时无需迁移。
 
-## 1.1 `lr_channel_key` — 渠道上游 key
-
-```sql
-CREATE TABLE `lr_channel_key` (
+-- ---------------------------------------------------------------
+-- 1.1 lr_channel_key — 渠道上游 key
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `lr_channel_key` (
   `id`             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `channel_id`     BIGINT UNSIGNED NOT NULL,
   `api_key_cipher` VARBINARY(512) NOT NULL COMMENT 'AES-GCM 加密后的真实 key，主密钥来自 RELAY_MASTER_KEY',
@@ -42,12 +45,11 @@ CREATE TABLE `lr_channel_key` (
   `created_at`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY `idx_channel` (`channel_id`, `status`)
 ) COMMENT '渠道上游key';
-```
 
-## 2. `lr_model_mapping` — 模型映射（客户端可见名 → 渠道真实名）
-
-```sql
-CREATE TABLE `lr_model_mapping` (
+-- ---------------------------------------------------------------
+-- 2. lr_model_mapping — 模型映射（客户端可见名 → 渠道真实名）
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `lr_model_mapping` (
   `id`            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `public_name`   VARCHAR(128) NOT NULL COMMENT '对外模型名，客户端请求里填的',
   `channel_id`    BIGINT UNSIGNED NOT NULL COMMENT '走哪个渠道',
@@ -56,16 +58,13 @@ CREATE TABLE `lr_model_mapping` (
   KEY `idx_public` (`public_name`),
   KEY `idx_channel` (`channel_id`)
 ) COMMENT '模型映射';
-```
 
-> 路由查询：`WHERE public_name = ? AND enabled = 1`，可能命中多条（多渠道），交给 Router 按优先级/权重挑。
-
-## 2.1 `lr_ability` — 路由索引表（借鉴 One API ability 模式）
-
-渠道 / 模型映射**保存时全量重建**该渠道的行（先删后插）。运行时整表加载进内存快照，请求路径不查库。
-
-```sql
-CREATE TABLE `lr_ability` (
+-- ---------------------------------------------------------------
+-- 2.1 lr_ability — 路由索引表（借鉴 One API ability 模式）
+-- 渠道/模型映射保存时全量重建该渠道的行（先删后插）。
+-- 运行时整表加载进内存快照，请求路径不查库。
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `lr_ability` (
   `group_id`    BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '用户组，0=不限组',
   `public_name` VARCHAR(128) NOT NULL COMMENT '对外模型名',
   `channel_id`  BIGINT UNSIGNED NOT NULL,
@@ -75,14 +74,11 @@ CREATE TABLE `lr_ability` (
   PRIMARY KEY (`group_id`, `public_name`, `channel_id`),
   KEY `idx_channel` (`channel_id`)
 ) COMMENT '路由索引(渠道保存时重建)';
-```
 
-> 与 `lr_model_mapping` 的分工：mapping 管"对外名 → 上游真实名"的**转换**；ability 管"分组 + 对外名 → 渠道"的**路由**。重建时按 channel.models ∩ mapping.public_name 展开。
-
-## 3. `lr_model_pricing` — 定价表
-
-```sql
-CREATE TABLE `lr_model_pricing` (
+-- ---------------------------------------------------------------
+-- 3. lr_model_pricing — 定价表
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `lr_model_pricing` (
   `id`              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `model_name`      VARCHAR(128) NOT NULL COMMENT '模型名(对齐 mapping.real_name)',
   `input_per_m`     BIGINT NOT NULL COMMENT '每 1M 输入 token 价格(quota)',
@@ -91,40 +87,39 @@ CREATE TABLE `lr_model_pricing` (
   `updated_at`      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_model` (`model_name`)
 ) COMMENT '模型定价';
-```
 
-## 4. `lr_user` — 用户
-
-```sql
-CREATE TABLE `lr_user` (
+-- ---------------------------------------------------------------
+-- 4. lr_user — 用户
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `lr_user` (
   `id`           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `username`     VARCHAR(64) NOT NULL,
   `password_hash` VARCHAR(255) NOT NULL COMMENT 'bcrypt',
   `role`         TINYINT NOT NULL DEFAULT 2 COMMENT '1管理员 2普通用户',
   `group_id`     BIGINT UNSIGNED NULL COMMENT '用户组(倍率)',
-  `quota`        BIGINT NOT NULL DEFAULT 0 COMMENT '可用配额(预扣冻结只存在于Redis，见第9节)',
+  `quota`        BIGINT NOT NULL DEFAULT 0 COMMENT '可用配额(预扣冻结只存在于Redis)',
   `used_quota`   BIGINT NOT NULL DEFAULT 0 COMMENT '累计消耗',
   `status`       TINYINT NOT NULL DEFAULT 1,
   `created_at`   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_username` (`username`)
 ) COMMENT '用户';
-```
 
-## 5. `lr_user_group` — 用户组（计费倍率）
-
-```sql
-CREATE TABLE `lr_user_group` (
+-- ---------------------------------------------------------------
+-- 5. lr_user_group — 用户组（计费倍率）
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `lr_user_group` (
   `id`      BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `name`    VARCHAR(64) NOT NULL,
   `ratio`   DECIMAL(6,3) NOT NULL DEFAULT 1.000 COMMENT '计费倍率，1.0=原价',
   `enabled` TINYINT NOT NULL DEFAULT 1
 ) COMMENT '用户组';
-```
 
-## 6. `lr_token` — 虚拟令牌（发给下游的 key）
-
-```sql
-CREATE TABLE `lr_token` (
+-- ---------------------------------------------------------------
+-- 6. lr_token — 虚拟令牌（发给下游的 key）
+-- 只存 hash 不存明文：创建时生成 sk-relay- + 32 位随机串，
+-- 明文返回一次，落库存 sha256。
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `lr_token` (
   `id`            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `user_id`       BIGINT UNSIGNED NOT NULL,
   `name`          VARCHAR(64) NOT NULL DEFAULT '' COMMENT '备注名',
@@ -141,15 +136,12 @@ CREATE TABLE `lr_token` (
   UNIQUE KEY `uk_key_hash` (`key_hash`),
   KEY `idx_user` (`user_id`)
 ) COMMENT '虚拟令牌';
-```
 
-> **只存 hash 不存明文**：创建时生成 `sk-relay-` + 32 位随机串，明文返回一次，落库存 sha256。
-> 鉴权时 `sha256(请求key)` 查表即可。
-
-## 7. `lr_relay_log` — 请求日志
-
-```sql
-CREATE TABLE `lr_relay_log` (
+-- ---------------------------------------------------------------
+-- 7. lr_relay_log — 请求日志
+-- 日志量大，写入走内存 channel 异步批量 insert；按月分表或定期归档。
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `lr_relay_log` (
   `id`             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `trace_id`       CHAR(32) NOT NULL COMMENT '贯穿全链路',
   `user_id`        BIGINT UNSIGNED NOT NULL,
@@ -159,6 +151,7 @@ CREATE TABLE `lr_relay_log` (
   `model_real`     VARCHAR(128) NOT NULL DEFAULT '' COMMENT '实际路由到的模型',
   `prompt_tokens`  INT NOT NULL DEFAULT 0,
   `completion_tokens` INT NOT NULL DEFAULT 0,
+  `usage_estimated` TINYINT NOT NULL DEFAULT 0 COMMENT '1=usage为估算(上游未返回)',
   `quota_cost`     BIGINT NOT NULL DEFAULT 0 COMMENT '本次实际扣费',
   `duration_ms`    INT NOT NULL DEFAULT 0,
   `first_byte_ms`  INT NOT NULL DEFAULT 0 COMMENT '首字耗时(体验指标)',
@@ -172,16 +165,12 @@ CREATE TABLE `lr_relay_log` (
   KEY `idx_channel_time` (`channel_id`, `created_at`),
   KEY `idx_created` (`created_at`)
 ) COMMENT '中转请求日志';
-```
 
-> 日志量大，写入走内存 channel 异步批量 insert；按月分表或定期归档（可复用主工程 TDengine/ES 的思路，后续分析场景再迁）。
-
-## 7.1 `lr_usage_hourly` — 用量预聚合（借鉴 New API usedata）
-
-结算时同批次累加（内存聚合 + 定期 flush，与批量落库同一路径），看板/汇总查这张表，不动 `lr_relay_log`。
-
-```sql
-CREATE TABLE `lr_usage_hourly` (
+-- ---------------------------------------------------------------
+-- 7.1 lr_usage_hourly — 用量预聚合（借鉴 New API usedata）
+-- 结算时同批次累加，看板/汇总查这张表，不动 lr_relay_log。
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `lr_usage_hourly` (
   `hour`              DATETIME NOT NULL COMMENT '整点，如 2026-09-28 14:00:00',
   `user_id`           BIGINT UNSIGNED NOT NULL,
   `channel_id`        BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -195,38 +184,3 @@ CREATE TABLE `lr_usage_hourly` (
   `first_byte_ms_total` BIGINT NOT NULL DEFAULT 0,
   PRIMARY KEY (`hour`, `user_id`, `channel_id`, `model_request`)
 ) COMMENT '小时级用量聚合';
-```
-
-## 8. 关键 Redis 结构
-
-| Key | 类型 | 用途 | TTL |
-|---|---|---|---|
-| `lr:token:{key_hash}` | string(JSON) | 令牌信息缓存，鉴权免查库 | 30s |
-| `lr:rl:{token_id}` | sorted set | 滑动窗口限流（score=时间戳） | 60s |
-| `lr:userquota:{user_id}` | hash | `Id` / `Schema`(版本) / `Quota` / `UsedQuota`，Lua 原子预扣费 | 7d，写时续期 |
-| `lr:tokenquota:{token_id}` | hash | 同上，令牌级独立配额（quota=-1 时不启用） | 7d |
-| `lr:ch:health:{channel_id}` | string | 渠道健康状态（被动统计结果） | 90s |
-
-> 配额缓存带 `Schema` 版本字段（借鉴 New API）：管理员调整配额/禁用用户时递增版本，旧缓存 Lua 校验失败自动回源，防止脏缓存误扣。
-
-## 9. 预扣费/结算的配额流转（Redis Lua 原子 + 批量落库）
-
-```
-请求前 TryReserve（Lua，见 01 文档 3.4②）:
-    缓存 Quota >= freeze → HINCRBY Quota -freeze            （成功）
-    缓存 Quota <  freeze → 返回 0 → 402
-    校验失败(-1)        → 回源 DB 重建缓存 → 重试一次
-
-请求后 ApplyDelta（Lua，一次 HINCRBY 完成 返还/补扣+释放冻结）:
-    delta = freeze - 实际费用
-    HINCRBY Quota delta; HINCRBY UsedQuota 实际费用
-
-DB 落库（后台批量，BatchUpdateIntervalSec 默认 5s）:
-    内存聚合 user_id/token_id → delta 队列，定期 flush:
-    UPDATE lr_user  SET quota = quota + ?, used_quota = used_quota + ? WHERE id = ?
-    UPDATE lr_token SET quota = quota + ?, used_quota = used_quota + ? WHERE id = ?
-    （DB 是最终对账依据；Redis 重启/未命中时回源 DB 重建缓存）
-```
-
-并发正确性：预扣与结算全部在 Redis 侧原子完成，DB 只做异步聚合落库——高并发下不超扣、不锁表。
-崩溃兜底：预扣成功但进程崩溃时，冻结量随缓存 TTL 自然失效；启动时对账 Redis vs DB 配额，偏差超阈值告警。

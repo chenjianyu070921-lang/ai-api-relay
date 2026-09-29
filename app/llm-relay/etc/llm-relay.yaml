@@ -4,11 +4,27 @@ Port: 8888
 # 流式读超时要长（毫秒），默认 300s
 Timeout: 300000
 
-# 上游渠道（P0 先单渠道，配置文件写死；P2 再迁移到数据库 + 多渠道）
+Mysql:
+  DataSource: ${LLM_RELAY_MYSQL_DSN}
+
+Redis:
+  Addr: ${LLM_RELAY_REDIS_ADDR}
+  Password: ${LLM_RELAY_REDIS_PASS}
+
+Relay:
+  MasterKeyEnv: LLM_RELAY_MASTER_KEY   # 上游key AES 加密主密钥(P1 用)
+  DefaultMaxTokens: 4096               # 客户端没传 max_tokens 时的预扣费上限
+  MaxRetryTimes: 3                     # P0 单渠道暂不生效
+  UpstreamTimeoutMs: 300000            # 流式整体读超时
+  ConnectTimeoutMs: 10000
+  EnforceIncludeUsage: true            # OpenAI兼容上游注入 stream_options.include_usage
+  BatchUpdateIntervalSec: 5            # 配额增量批量落库周期
+  LogBuffer: 1024                      # 异步日志 channel 容量
+  TokenCacheSec: 30
+
+# 上游渠道（P0 先单渠道写死；P2 迁移到 channel 表 + 内存快照路由）
 Upstream:
   Name: deepseek
   BaseURL: https://api.deepseek.com
-  APIKey: "sk-xxx-换成你的真实上游key"
-
-# 对外分发的虚拟 key（P0 先写死一个，P3 换成数据库令牌表）
-AuthKey: "sk-relay-test"
+  APIKey: ${LLM_RELAY_UPSTREAM_KEY}
+  Model: ""                            # 空 = 原样透传请求里的 model
