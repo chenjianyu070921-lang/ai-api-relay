@@ -85,6 +85,16 @@ type ModelPricing struct {
 
 func (ModelPricing) TableName() string { return "lr_model_pricing" }
 
+type ModelMapping struct {
+	ID         int64  `gorm:"column:id;primaryKey"`
+	PublicName string `gorm:"column:public_name"`
+	ChannelID  int64  `gorm:"column:channel_id"`
+	RealName   string `gorm:"column:real_name"`
+	Enabled    int8   `gorm:"column:enabled"`
+}
+
+func (ModelMapping) TableName() string { return "lr_model_mapping" }
+
 // RelayLog 请求日志（lr_relay_log），走异步批量写入，见 logwriter.go
 type RelayLog struct {
 	ID               int64     `gorm:"column:id;primaryKey"`
@@ -141,6 +151,21 @@ func GetPricing(db *gorm.DB, modelName string) (*ModelPricing, error) {
 		return nil, err
 	}
 	return &p, nil
+}
+
+// GetModelMapping 查模型映射（对外名 → 渠道真实名）。
+// P1 单渠道阶段取第一条 enabled 映射（channel_id 路由语义 P2 随 ability 表收紧）；
+// 查不到返回 (nil, nil)，调用方回退到请求原名/配置覆盖。
+func GetModelMapping(db *gorm.DB, publicName string) (*ModelMapping, error) {
+	var m ModelMapping
+	err := db.Where("public_name = ? AND enabled = 1", publicName).First(&m).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &m, nil
 }
 
 // ApplyQuotaDelta 配额增量落库（Redis 结算后的异步 flush，P0 每笔直接异步执行；

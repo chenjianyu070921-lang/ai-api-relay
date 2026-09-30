@@ -32,9 +32,10 @@ type Config struct {
 	// Upstream P0 单渠道写死在配置；P2 迁移到 channel 表 + 内存快照路由
 	Upstream struct {
 		Name    string
+		Type    string `json:",default=openai"` // openai | anthropic
 		BaseURL string
-		Path    string `json:",default=/v1/chat/completions"` // ark 等上游可配 /chat/completions
+		Path    string `json:",default=/v1/chat/completions"` // anthropic 系上游配 /v1/messages
 		APIKey  string
-		Model   string // 上游模型名；空则原样透传请求里的 model
+		Model   string // 上游模型名；非空时强制替换请求模型名
 	}
 }

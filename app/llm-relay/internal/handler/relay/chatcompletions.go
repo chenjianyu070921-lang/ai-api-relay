@@ -24,8 +24,8 @@ const (
 
 const defaultUpstreamPath = "/v1/chat/completions"
 
-// ChatCompletionsHandler 对外 OpenAI 兼容入口，P0 完整流水线：
-// 鉴权(中间件) → 模型白名单 → 预扣费(Lua) → 注入include_usage → 转发/SSE透传 → 结算 → 异步日志
+// ChatCompletionsHandler 对外 OpenAI 兼容入口（P1）：
+// 鉴权(中间件) → 白名单 → runRelay 公共流水线
 func ChatCompletionsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -36,7 +36,7 @@ func ChatCompletionsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			ClientIP: clientIP(r),
 		}
 
-		// ---- 解析请求（P0 透传协议，只取路由/计费需要的字段）----
+		// ---- 解析请求（只取路由/计费需要的字段）----
 		rawBody, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "read request body failed", "invalid_request_error", "bad_request")
@@ -68,77 +68,16 @@ func ChatCompletionsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		// ---- P0 单渠道：模型名映射（配置了 Upstream.Model 则替换）----
-		realModel := reqMeta.Model
-		if svcCtx.Config.Upstream.Model != "" {
-			realModel = svcCtx.Config.Upstream.Model
-		}
-		entry.ModelReal = realModel
-
-		// ---- 预扣费（Redis Lua 原子，见 01 文档 3.4②）----
-		pricing, err := loadPricing(svcCtx, reqMeta.Model, realModel)
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "load pricing failed", "internal_error", "pricing_failed")
-			return
-		}
 		maxTokens := svcCtx.Config.Relay.DefaultMaxTokens
 		if reqMeta.MaxTokens != nil && *reqMeta.MaxTokens > 0 {
 			maxTokens = *reqMeta.MaxTokens
 		}
-		promptEst := relay.EstimateTokens(rawBody)
-		freeze := relay.CalcFreeze(pricing, promptEst, maxTokens, 1.0)
-		if err := svcCtx.Bill.Reserve(ctx, info.User, info, freeze); err != nil {
-			if err == relay.ErrInsufficientQuota {
-				finishLog(svcCtx, entry, start, logStatusQuotaFail, http.StatusPaymentRequired, "insufficient quota")
-				writeJSONError(w, http.StatusPaymentRequired, "insufficient quota", "insufficient_quota", "quota_exceeded")
-				return
-			}
-			writeJSONError(w, http.StatusInternalServerError, "billing reserve failed", "internal_error", "billing_failed")
-			logx.Errorf("reserve failed: %v", err)
-			return
-		}
 
-		// ---- 注入 include_usage + 模型名替换 ----
-		forwardBody := rawBody
-		if svcCtx.Config.Relay.EnforceIncludeUsage && reqMeta.Stream {
-			if injected, _, err := relay.InjectStreamUsage(rawBody); err == nil {
-				forwardBody = injected
-			}
-		}
-		if realModel != reqMeta.Model {
-			if replaced, ok := replaceModelName(forwardBody, realModel); ok {
-				forwardBody = replaced
-			}
-		}
-
-		// ---- 转发 ----
-		result, ferr := relay.Forward(ctx, w, svcCtx.UpstreamHTTP,
-			svcCtx.Config.Upstream.BaseURL, upstreamPath(svcCtx), svcCtx.Config.Upstream.APIKey,
-			forwardBody)
-		if ferr != nil {
-			// 首字节未出失败：全额返还冻结（cost=0），日志记上游失败
-			svcCtx.Bill.Settle(ctx, info.User, info, freeze, 0)
-			httpStatus := 502
-			if result != nil && result.UpstreamStatus != 0 {
-				httpStatus = result.UpstreamStatus
-			}
-			finishLog(svcCtx, entry, start, logStatusUpstreamFail, httpStatus, ferr.Error())
-			if ctx.Err() == nil {
-				writeJSONError(w, http.StatusBadGateway, "upstream request failed", "upstream_error", "bad_gateway")
-			}
-			return
-		}
-
-		// ---- 结算（真实 usage × 定价，见 01 文档 3.4③）----
-		cost := relay.CalcCost(pricing, result.PromptTokens, result.CompletionTokens, 1.0)
-		svcCtx.Bill.Settle(ctx, info.User, info, freeze, cost)
-
-		entry.PromptTokens = result.PromptTokens
-		entry.CompletionTokens = result.CompletionTokens
-		entry.UsageEstimated = b2i(result.UsageEstimated)
-		entry.QuotaCost = cost
-		entry.FirstByteMs = result.FirstByteMs
-		finishLog(svcCtx, entry, start, logStatusSuccess, http.StatusOK, "")
+		runRelay(w, r, svcCtx, entry, info, "openai", RequestMeta{
+			Model:     reqMeta.Model,
+			Stream:    reqMeta.Stream,
+			MaxTokens: maxTokens,
+		}, rawBody)
 	}
 }
 
@@ -181,6 +120,9 @@ func replaceModelName(body []byte, realModel string) ([]byte, bool) {
 func upstreamPath(svcCtx *svc.ServiceContext) string {
 	if svcCtx.Config.Upstream.Path != "" {
 		return svcCtx.Config.Upstream.Path
+	}
+	if svcCtx.Config.Upstream.Type == "anthropic" {
+		return "/v1/messages"
 	}
 	return defaultUpstreamPath
 }

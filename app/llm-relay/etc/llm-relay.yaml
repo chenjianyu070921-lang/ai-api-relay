@@ -22,9 +22,11 @@ Relay:
   LogBuffer: 1024                      # 异步日志 channel 容量
   TokenCacheSec: 30
 
-# 上游渠道（P0 先单渠道写死；P2 迁移到 channel 表 + 内存快照路由）
+# 上游渠道（P1 单渠道写死；P2 迁移到 channel 表 + 内存快照路由）
 Upstream:
   Name: deepseek
+  Type: openai                         # openai | anthropic（api.anthropic.com 配 anthropic + Path /v1/messages）
   BaseURL: https://api.deepseek.com
   APIKey: ${LLM_RELAY_UPSTREAM_KEY}
-  Model: ""                            # 空 = 原样透传请求里的 model
+  Model: ""                            # 空 = 原样透传；配置覆盖优先级低于 lr_model_mapping 映射表
+

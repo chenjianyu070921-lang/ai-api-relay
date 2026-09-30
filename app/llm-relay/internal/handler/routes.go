@@ -19,6 +19,11 @@ func RegisterHandlers(server *rest.Server, svcCtx *svc.ServiceContext) {
 			Handler: relay.TokenAuthMiddleware(svcCtx, relay.ChatCompletionsHandler(svcCtx)),
 		},
 		{
+			Method:  http.MethodPost,
+			Path:    "/v1/messages",
+			Handler: relay.TokenAuthMiddleware(svcCtx, relay.MessagesHandler(svcCtx)),
+		},
+		{
 			Method:  http.MethodGet,
 			Path:    "/healthz",
 			Handler: relay.HealthzHandler(),

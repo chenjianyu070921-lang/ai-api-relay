@@ -186,12 +186,15 @@ func (b *Billing) Settle(ctx context.Context, user *model.User, token *TokenInfo
 	if freeze <= 0 && cost <= 0 {
 		return
 	}
+	// 结算必须完成：客户端断连后请求 ctx 已取消，Redis Eval 会直接失败，
+	// 导致冻结量永久卡死在缓存。这里统一换独立 context（DB/Redis 同理）。
+	bg := context.Background()
 	userKey := userQuotaCachePrefix + fmt.Sprint(user.ID)
-	b.applyDelta(ctx, userKey, delta, cost, user.ID)
+	b.applyDelta(bg, userKey, delta, cost, user.ID)
 
 	if token != nil && token.Quota >= 0 {
 		tokenKey := tokenQuotaCachePrefix + fmt.Sprint(token.ID)
-		b.applyDelta(ctx, tokenKey, delta, cost, token.ID)
+		b.applyDelta(bg, tokenKey, delta, cost, token.ID)
 	}
 
 	// DB 增量落库（P0 每笔异步直写；P3 换内存聚合批量 flush，见 01 文档 3.4④）
@@ -199,12 +202,10 @@ func (b *Billing) Settle(ctx context.Context, user *model.User, token *TokenInfo
 	// 净效果是 quota -= cost / used += cost，而不是缓存侧的 delta=freeze-cost
 	if b.db != nil {
 		go func() {
-			bg := context.Background()
 			_ = model.ApplyQuotaDelta(b.db, user.ID, -cost, cost)
 			if token != nil && token.Quota >= 0 {
 				_ = model.ApplyTokenQuotaDelta(b.db, token.ID, -cost, cost)
 			}
-			_ = bg // background ctx：结算必须完成，不随请求取消
 		}()
 	}
 }
